@@ -63,6 +63,9 @@ concurrent clients
 #define MAX_CLIENT 20
 
 
+#define MAX_BYTES 4096 //this will be the maximum size of the data that can be stored in the cache
+
+
 
 /*
 Defining the structure of the chache element
@@ -76,8 +79,8 @@ struct cache_element {
     char* data;
     int len;
     char* url;
-    time_t = last_used_time;
-    cache_element next*;
+    time_t  last_used_time;
+    cache_element* next;
 };
 
 /*
@@ -158,6 +161,88 @@ cache_element* head;
 int cache_size; // this will denote the current size of the cache
 
 
+void *thread_fn(void *socket_new){
+
+  sem_wait(&semaphore);//this will wait until the semaphore value is greater than 0
+  int p;
+  sem_getvalue(&semaphore,&p);//this will get the value of the semaphore
+
+  printf("Semaphore value is %d\n",p);
+   int *t = (int*)socket_new;
+   int socketId = *t;
+   int bytes_send_client,length;
+
+   char *buffer = (char*)calloc(MAX_BYTES,sizeof(char));
+
+   bzero(buffer,MAX_BYTES);
+
+   bytes_send_client = recv(socketId,buffer,MAX_BYTES,0);
+
+   while(bytes_send_client>0){
+    length = strlen(buffer);
+
+    if(strstr(buffer,"\r\n\r\n")==NULL){
+      bytes_send_client = recv(socketId,buffer+length,MAX_BYTES-length,0);
+    }else{
+      break;
+    }
+   }
+
+/*
+Here tempRequest will be the copy of the buffer for the purpose of the parsing the request
+*/
+
+
+   char *tempRequest = (char*)malloc(strlen(buffer)*sizeof(char)+1);
+
+//copy the buffer to the tempRequest
+   for(int i=0;i<strlen(buffer);i++){
+    tempRequest[i] = buffer[i];
+   }
+
+
+//Here we are finding the cache element related to the request
+
+struct cache_element* temp = find(tempRequest);
+
+//if found then send the data to the client
+
+if(temp!=NULL){
+  printf("Data found in the cache\n");
+  int size = temp->len/sizeof(char);
+
+  int pos = 0;
+  char response[MAX_BYTES];
+
+  /*
+  this while loop will send the data to the client in the chunks of MAX_BYTES
+  -first it checks the position of the data in the cache
+  -then it will increment the position of the data in the cache
+  -then it will send the data to the client
+
+  */
+
+  while(pos<size){
+    bzero(response,MAX_BYTES);
+    
+    for(int i=0;i<MAX_BYTES;i++){
+      response[i] = temp->data[pos];
+      pos++;
+      
+      send(socketId,response,MAX_BYTES,0);
+
+
+    }
+
+    printf("Data found in the cache\n");
+    printf("%s\n\n",response);
+  }
+
+
+
+}
+}
+
 int main(int argc , char* argv[]){
 
     //define the client socketID and the client_length
@@ -198,20 +283,66 @@ int main(int argc , char* argv[]){
       }
 
       int reuse = 1;
-      if(setsocketopt(proxy_socketId,SOL_SOCKET,SO_REUSEADDR,(const char* )&reuse,sizeof(reuse))<0){
+      if(setsockopt(proxy_socketId,SOL_SOCKET,SO_REUSEADDR,(const char* )&reuse,sizeof(reuse))<0){
         perror("setsocketopt (SO_REUSEADDR) failed"); 
       }
 
       bzero((char*)&server_add , sizeof(server_add));
 
-      
+      server_add.sin_family = AF_INET;
+      server_add.sin_port = htons(port_number);
+      server_add.sin_addr.s_addr = INADDR_ANY;
+
+      if(bind(proxy_socketId,(struct sockaddr*)&server_add,sizeof(server_add))<0){
+        perror("Port is not available for the binding\n");
+        exit(1);
+      }
+
+      printf("Binding to port %d\n",port_number);
 
 
+      int listen_status = listen(proxy_socketId,MAX_CLIENT);
+
+      if(listen_status<0){
+        perror("Error in listening port\n");
+        exit(1);
+
+      }
+
+      int i=0;
+      int connected_socketId[MAX_CLIENT];
+
+      while(1){
+    bzero((char* )&client_add,sizeof(client_add));
+    client_length = sizeof(client_add);
+    client_socketId = accept(proxy_socketId,(struct sockaddr *)&client_add,(socklen_t*)&client_length);
+
+       if(client_socketId<0){
+        printf("Not able to connect due to client socketID not initialized");
+        exit(1);
+       }
+
+       else{
+        connected_socketId[i] = client_socketId;
+
+       }
+
+       struct sockaddr_in * client_pt = (struct sockaddr_in * )&client_add;
+       struct in_addr ip_addr = client_pt ->sin_addr;
+       char str[INET_ADDRSTRLEN];
+       inet_ntop(AF_INET,&ip_addr,str , INET_ADDRSTRLEN);
+
+       printf("Client is connected on the port %d with ip address %s\n",ntohs(client_add.sin_port),str);
 
 
+       pthread_create(&tid[i],NULL,thread_fn,(void *)&connected_socketId[i]);
 
+       i++;
 
+    
+      }
 
+      close(proxy_socketId);
 return 0;
 }
 
